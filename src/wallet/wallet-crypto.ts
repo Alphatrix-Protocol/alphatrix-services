@@ -1,4 +1,9 @@
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  hkdfSync,
+  randomBytes,
+} from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_BYTES = 12;
@@ -12,9 +17,7 @@ const KEY_BYTES = 32;
  * info       — email (additional context, changes if email changes)
  */
 function deriveKey(masterKey: Buffer, userId: string, email: string): Buffer {
-  return Buffer.from(
-    hkdfSync('sha256', masterKey, userId, email, KEY_BYTES),
-  );
+  return Buffer.from(hkdfSync('sha256', masterKey, userId, email, KEY_BYTES));
 }
 
 export function encryptSecretKey(
@@ -39,10 +42,15 @@ export function decryptSecretKey(
   email: string,
 ): Uint8Array {
   const [ivHex, tagHex, ctHex] = stored.split(':');
-  if (!ivHex || !tagHex || !ctHex) throw new Error('Invalid encrypted key format');
+  if (!ivHex || !tagHex || !ctHex)
+    throw new Error('Invalid encrypted key format');
 
   const derived = deriveKey(masterKey, userId, email);
-  const decipher = createDecipheriv(ALGORITHM, derived, Buffer.from(ivHex, 'hex'));
+  const decipher = createDecipheriv(
+    ALGORITHM,
+    derived,
+    Buffer.from(ivHex, 'hex'),
+  );
   decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
   const decrypted = Buffer.concat([
     decipher.update(Buffer.from(ctHex, 'hex')),

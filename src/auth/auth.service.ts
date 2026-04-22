@@ -29,8 +29,10 @@ export class AuthService {
 
   constructor(
     @InjectRepository(User) private readonly userRepo: Repository<User>,
-    @InjectRepository(Passkey) private readonly passkeyRepo: Repository<Passkey>,
-    @InjectRepository(MagicLink) private readonly magicLinkRepo: Repository<MagicLink>,
+    @InjectRepository(Passkey)
+    private readonly passkeyRepo: Repository<Passkey>,
+    @InjectRepository(MagicLink)
+    private readonly magicLinkRepo: Repository<MagicLink>,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly walletService: WalletService,
@@ -43,30 +45,36 @@ export class AuthService {
 
   async googleAuth(idToken: string) {
     const payload = await this.googleStrategy.verifyToken(idToken);
-    if (!payload?.email) throw new UnauthorizedException('Invalid Google token');
+    if (!payload?.email)
+      throw new UnauthorizedException('Invalid Google token');
 
-    let user = await this.userRepo.findOne({ where: { googleId: payload.sub } });
-    let wallet: { solanaAddress: string; usdcTokenAddress: string } | null = null;
+    let user = await this.userRepo.findOne({
+      where: { googleId: payload.sub },
+    });
+    let wallet: { solanaAddress: string; usdcTokenAddress: string } | null =
+      null;
 
     if (!user) {
-      const byEmail = await this.userRepo.findOne({ where: { email: payload.email } });
+      const byEmail = await this.userRepo.findOne({
+        where: { email: payload.email },
+      });
 
       if (byEmail) {
         byEmail.googleId = payload.sub;
         user = await this.userRepo.save(byEmail);
       } else {
         const newUser = Object.assign(new User(), {
-          email: payload.email as string,
+          email: payload.email,
           name: payload.name ?? null,
           avatarUrl: payload.picture ?? null,
-          googleId: payload.sub as string,
+          googleId: payload.sub,
         });
         user = await this.userRepo.save(newUser);
         wallet = await this.walletService.generateWalletsForUser(user.id);
       }
     }
 
-    return this.issueTokenResponse(user as User, wallet);
+    return this.issueTokenResponse(user, wallet);
   }
 
   // ─── Passkey ─────────────────────────────────────────────────────────────
@@ -80,17 +88,26 @@ export class AuthService {
     return this.passkeyStrategy.generateRegistrationOptions(email, user.id);
   }
 
-  async passkeyRegisterVerify(email: string, credential: RegistrationResponseJSON) {
+  async passkeyRegisterVerify(
+    email: string,
+    credential: RegistrationResponseJSON,
+  ) {
     const user = await this.userRepo.findOne({ where: { email } });
     if (!user) throw new BadRequestException('User not found');
 
-    const result = await this.passkeyStrategy.verifyRegistration(email, credential);
+    const result = await this.passkeyStrategy.verifyRegistration(
+      email,
+      credential,
+    );
     if (!result.verified || !result.registrationInfo) {
       throw new UnauthorizedException('Passkey registration failed');
     }
 
-    const { credential: cred, credentialDeviceType, credentialBackedUp } =
-      result.registrationInfo;
+    const {
+      credential: cred,
+      credentialDeviceType,
+      credentialBackedUp,
+    } = result.registrationInfo;
 
     await this.passkeyRepo.save(
       this.passkeyRepo.create({
@@ -106,9 +123,13 @@ export class AuthService {
 
     // Wallet was generated at register/options step — return addresses if present
     const freshUser = await this.userRepo.findOne({ where: { id: user.id } });
-    const wallet = freshUser?.solanaAddress && freshUser?.usdcTokenAddress
-      ? { solanaAddress: freshUser.solanaAddress, usdcTokenAddress: freshUser.usdcTokenAddress }
-      : null;
+    const wallet =
+      freshUser?.solanaAddress && freshUser?.usdcTokenAddress
+        ? {
+            solanaAddress: freshUser.solanaAddress,
+            usdcTokenAddress: freshUser.usdcTokenAddress,
+          }
+        : null;
     return this.issueTokenResponse(user, wallet);
   }
 
@@ -116,11 +137,12 @@ export class AuthService {
     return this.passkeyStrategy.generateAuthenticationOptions(email);
   }
 
-  async passkeyLoginVerify(email: string, credential: AuthenticationResponseJSON) {
-    const { verified, passkeyId } = await this.passkeyStrategy.verifyAuthentication(
-      email,
-      credential,
-    );
+  async passkeyLoginVerify(
+    email: string,
+    credential: AuthenticationResponseJSON,
+  ) {
+    const { verified, passkeyId } =
+      await this.passkeyStrategy.verifyAuthentication(email, credential);
 
     if (!verified.verified || !verified.authenticationInfo) {
       throw new UnauthorizedException('Passkey authentication failed');
@@ -149,14 +171,16 @@ export class AuthService {
 
     const rawToken = nanoid(48);
     const tokenHash = await bcrypt.hash(rawToken, 10);
-    const expiryMinutes = this.config.get<number>('MAGIC_LINK_EXPIRY_MINUTES') ?? 15;
+    const expiryMinutes =
+      this.config.get<number>('MAGIC_LINK_EXPIRY_MINUTES') ?? 15;
     const expiresAt = new Date(Date.now() + Number(expiryMinutes) * 60 * 1000);
 
     await this.magicLinkRepo.save(
       this.magicLinkRepo.create({ userId: user.id, tokenHash, expiresAt }),
     );
 
-    const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:8000';
+    const appUrl =
+      this.config.get<string>('APP_URL') ?? 'http://localhost:8000';
     const link = `${appUrl}/auth/verify?token=${rawToken}`;
 
     // TODO: send via Resend / SendGrid
@@ -168,9 +192,13 @@ export class AuthService {
   async magicLinkVerify(rawToken: string) {
     const user = await this.magicLinkStrategy.verifyToken(rawToken);
     if (!user) throw new UnauthorizedException('Invalid or expired magic link');
-    const wallet = user.solanaAddress && user.usdcTokenAddress
-      ? { solanaAddress: user.solanaAddress, usdcTokenAddress: user.usdcTokenAddress }
-      : null;
+    const wallet =
+      user.solanaAddress && user.usdcTokenAddress
+        ? {
+            solanaAddress: user.solanaAddress,
+            usdcTokenAddress: user.usdcTokenAddress,
+          }
+        : null;
     return this.issueTokenResponse(user, wallet);
   }
 

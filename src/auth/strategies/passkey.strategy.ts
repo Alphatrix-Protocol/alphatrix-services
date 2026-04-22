@@ -22,7 +22,8 @@ import { User } from '../entities/user.entity';
 @Injectable()
 export class PasskeyStrategy {
   constructor(
-    @InjectRepository(Passkey) private readonly passkeyRepo: Repository<Passkey>,
+    @InjectRepository(Passkey)
+    private readonly passkeyRepo: Repository<Passkey>,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     private readonly config: ConfigService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,

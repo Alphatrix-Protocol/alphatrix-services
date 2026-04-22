@@ -1,8 +1,17 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  LAMPORTS_PER_SOL,
+} from '@solana/web3.js';
 import {
   getOrCreateAssociatedTokenAccount,
   getAssociatedTokenAddressSync,
@@ -26,7 +35,8 @@ export class WalletService {
     @InjectRepository(User) private readonly userRepo: Repository<User>,
   ) {
     this.connection = new Connection(
-      config.get<string>('SOLANA_RPC_URL') ?? 'https://api.mainnet-beta.solana.com',
+      config.get<string>('SOLANA_RPC_URL') ??
+        'https://api.mainnet-beta.solana.com',
       'confirmed',
     );
 
@@ -52,7 +62,10 @@ export class WalletService {
 
     if (user.solanaAddress && user.usdcTokenAddress) {
       this.logger.log(`Wallets already exist for user ${userId}, skipping`);
-      return { solanaAddress: user.solanaAddress, usdcTokenAddress: user.usdcTokenAddress };
+      return {
+        solanaAddress: user.solanaAddress,
+        usdcTokenAddress: user.usdcTokenAddress,
+      };
     }
 
     const keypair = Keypair.generate();
@@ -77,7 +90,9 @@ export class WalletService {
       walletsGeneratedAt: new Date(),
     });
 
-    this.logger.log(`Wallet generated for user ${userId} — address: ${solanaAddress} | USDC ATA: ${usdcTokenAddress}`);
+    this.logger.log(
+      `Wallet generated for user ${userId} — address: ${solanaAddress} | USDC ATA: ${usdcTokenAddress}`,
+    );
     return { solanaAddress, usdcTokenAddress };
   }
 
@@ -95,9 +110,12 @@ export class WalletService {
     const walletPubkey = new PublicKey(user.solanaAddress);
 
     try {
-      const ata = await this.connection.getParsedTokenAccountsByOwner(walletPubkey, {
-        mint: USDC_MINT,
-      });
+      const ata = await this.connection.getParsedTokenAccountsByOwner(
+        walletPubkey,
+        {
+          mint: USDC_MINT,
+        },
+      );
 
       if (ata.value.length === 0) return 0;
 
@@ -129,7 +147,7 @@ export class WalletService {
     // Get or create sender ATA
     const senderAta = await getOrCreateAssociatedTokenAccount(
       this.connection,
-      senderKeypair,       // payer for account creation
+      senderKeypair, // payer for account creation
       USDC_MINT,
       senderKeypair.publicKey,
     );
@@ -152,7 +170,9 @@ export class WalletService {
       BigInt(Math.round(amount * USDC_DECIMALS)),
     );
 
-    this.logger.log(`USDC transfer: ${amount} from ${user.solanaAddress} to ${toAddress} — tx: ${sig}`);
+    this.logger.log(
+      `USDC transfer: ${amount} from ${user.solanaAddress} to ${toAddress} — tx: ${sig}`,
+    );
     return sig;
   }
 
@@ -165,11 +185,15 @@ export class WalletService {
 
   // ─── Internal ────────────────────────────────────────────────────────────
 
-  private async resolveUser(userId: string): Promise<User & { solanaAddress: string; solanaSecretKeyEnc: string }> {
+  private async resolveUser(
+    userId: string,
+  ): Promise<User & { solanaAddress: string; solanaSecretKeyEnc: string }> {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user?.solanaAddress || !user?.solanaSecretKeyEnc) {
-      throw new InternalServerErrorException(`Wallet not found for user ${userId}`);
+      throw new InternalServerErrorException(
+        `Wallet not found for user ${userId}`,
+      );
     }
-    return user as User & { solanaAddress: string; solanaSecretKeyEnc: string };
+    return user;
   }
 }

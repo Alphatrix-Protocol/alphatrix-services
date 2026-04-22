@@ -49,7 +49,10 @@ export class UserDto {
   @ApiProperty({ required: false, description: 'Solana wallet address' })
   solanaAddress?: string;
 
-  @ApiProperty({ required: false, description: 'USDC token account address — send USDC here' })
+  @ApiProperty({
+    required: false,
+    description: 'USDC token account address — send USDC here',
+  })
   usdcTokenAddress?: string;
 }
 

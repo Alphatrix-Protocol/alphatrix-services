@@ -16,6 +16,7 @@ import {
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { Public } from './decorators/public.decorator';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { GoogleAuthDto } from './dto/google-auth.dto';
 import {
@@ -40,6 +41,7 @@ export class AuthController {
 
   // ─── Google ──────────────────────────────────────────────────────────────
 
+  @Public()
   @Post('google')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Sign in with Google id_token' })
@@ -50,6 +52,7 @@ export class AuthController {
 
   // ─── Passkey ─────────────────────────────────────────────────────────────
 
+  @Public()
   @Post('passkey/register/options')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get passkey registration challenge' })
@@ -57,6 +60,7 @@ export class AuthController {
     return this.authService.passkeyRegisterOptions(dto.email);
   }
 
+  @Public()
   @Post('passkey/register/verify')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify passkey registration and issue JWT' })
@@ -68,6 +72,7 @@ export class AuthController {
     );
   }
 
+  @Public()
   @Post('passkey/login/options')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get passkey authentication challenge' })
@@ -75,6 +80,7 @@ export class AuthController {
     return this.authService.passkeyLoginOptions(dto.email);
   }
 
+  @Public()
   @Post('passkey/login/verify')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify passkey authentication and issue JWT' })
@@ -88,6 +94,7 @@ export class AuthController {
 
   // ─── Magic link ──────────────────────────────────────────────────────────
 
+  @Public()
   @Post('magic-link/send')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Send a magic link to the given email' })
@@ -95,6 +102,7 @@ export class AuthController {
     return this.authService.magicLinkSend(dto.email);
   }
 
+  @Public()
   @Post('magic-link/verify')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify a magic link token and issue JWT' })
@@ -106,7 +114,6 @@ export class AuthController {
   // ─── Me ──────────────────────────────────────────────────────────────────
 
   @Get('me')
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get the currently authenticated user' })
   @ApiResponse({ status: 200, type: UserDto })
