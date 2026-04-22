@@ -38,12 +38,15 @@ export class User {
   @OneToMany(() => MagicLink, (ml) => ml.user)
   magicLinks: MagicLink[];
 
-  // Wallet fields — populated by wallet service (future)
+  // Wallet fields — populated by wallet service
   @Column({ nullable: true })
   solanaAddress: string;
 
   @Column({ nullable: true })
   solanaSecretKeyEnc: string;
+
+  @Column({ nullable: true })
+  usdcTokenAddress: string; // ATA for USDC — derived from solanaAddress + USDC mint
 
   @Column({ nullable: true })
   polygonAddress: string;

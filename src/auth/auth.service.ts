@@ -46,6 +46,7 @@ export class AuthService {
     if (!payload?.email) throw new UnauthorizedException('Invalid Google token');
 
     let user = await this.userRepo.findOne({ where: { googleId: payload.sub } });
+    let wallet: { solanaAddress: string; usdcTokenAddress: string } | null = null;
 
     if (!user) {
       const byEmail = await this.userRepo.findOne({ where: { email: payload.email } });
@@ -61,11 +62,11 @@ export class AuthService {
           googleId: payload.sub as string,
         });
         user = await this.userRepo.save(newUser);
-        await this.walletService.generateWalletsForUser(user.id);
+        wallet = await this.walletService.generateWalletsForUser(user.id);
       }
     }
 
-    return this.issueTokenResponse(user as User);
+    return this.issueTokenResponse(user as User, wallet);
   }
 
   // ─── Passkey ─────────────────────────────────────────────────────────────
@@ -103,7 +104,12 @@ export class AuthService {
       }),
     );
 
-    return this.issueTokenResponse(user);
+    // Wallet was generated at register/options step — return addresses if present
+    const freshUser = await this.userRepo.findOne({ where: { id: user.id } });
+    const wallet = freshUser?.solanaAddress && freshUser?.usdcTokenAddress
+      ? { solanaAddress: freshUser.solanaAddress, usdcTokenAddress: freshUser.usdcTokenAddress }
+      : null;
+    return this.issueTokenResponse(user, wallet);
   }
 
   async passkeyLoginOptions(email: string) {
@@ -139,6 +145,7 @@ export class AuthService {
       user = await this.userRepo.save(this.userRepo.create({ email }));
       await this.walletService.generateWalletsForUser(user.id);
     }
+    // Wallet is generated here; address returned at verify step when JWT is issued
 
     const rawToken = nanoid(48);
     const tokenHash = await bcrypt.hash(rawToken, 10);
@@ -161,7 +168,10 @@ export class AuthService {
   async magicLinkVerify(rawToken: string) {
     const user = await this.magicLinkStrategy.verifyToken(rawToken);
     if (!user) throw new UnauthorizedException('Invalid or expired magic link');
-    return this.issueTokenResponse(user);
+    const wallet = user.solanaAddress && user.usdcTokenAddress
+      ? { solanaAddress: user.solanaAddress, usdcTokenAddress: user.usdcTokenAddress }
+      : null;
+    return this.issueTokenResponse(user, wallet);
   }
 
   // ─── Me ──────────────────────────────────────────────────────────────────
@@ -172,7 +182,10 @@ export class AuthService {
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
-  private issueTokenResponse(user: User) {
+  private issueTokenResponse(
+    user: User,
+    wallet?: { solanaAddress: string; usdcTokenAddress: string } | null,
+  ) {
     const payload: JwtPayload = { sub: user.id, email: user.email };
     return {
       accessToken: this.jwtService.sign(payload),
@@ -181,6 +194,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         avatarUrl: user.avatarUrl,
+        ...(wallet ?? {}),
       },
     };
   }
