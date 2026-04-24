@@ -119,8 +119,10 @@ export class WalletService {
 
       if (ata.value.length === 0) return 0;
 
-      const amount = ata.value[0].account.data.parsed.info.tokenAmount.uiAmount;
-      return amount ?? 0;
+      const parsed = ata.value[0].account.data.parsed as {
+        info: { tokenAmount: { uiAmount: number | null } };
+      };
+      return parsed.info.tokenAmount.uiAmount ?? 0;
     } catch {
       return 0;
     }

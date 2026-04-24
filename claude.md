@@ -24,7 +24,7 @@ The frontend (Next.js) is a separate repo. Do not suggest frontend changes.
 | Blockchain | Solana |
 | On-chain programs | Rust / Anchor |
 | Cache | Redis |
-| Database | PostgreSQL (with TypeORM or Prisma) |
+| Database | PostgreSQL (with TypeORM) |
 | Real-time | WebSockets (NestJS Gateway) |
 | Queue / events | Bull (Redis-backed) or Kafka |
 | HTTP client | Axios (wrapped per adapter) |
@@ -238,16 +238,357 @@ HMAC signing payload format: `{timestamp}.{METHOD}.{path}.{bodyHash}`
 
 ## Aggregation service responsibilities
 
-The aggregation service sits above all venue adapters. It:
+The aggregation service sits above all venue adapters. It solves four distinct
+problems in order — fetch, match, sync, and serve. Each layer feeds the next.
 
-1. **Polls** both venues for markets on a configurable interval (default 60s for metadata, 500ms for prices via workers)
-2. **Normalises** all market data into `NormalizedMarket` via the adapter interface
-3. **Deduplicates** — groups equivalent events across venues (same real-world event on both platforms)
-4. **Caches** in Redis with appropriate TTLs (market metadata ~60s, prices ~500ms)
-5. **Exposes** a unified queryable feed to the execution layer and API controllers
+---
 
-Event matching strategy for MVP: title similarity + category + resolution date window.
-Improve to embedding-based matching post-MVP.
+### Layer 1 — Fetch (market metadata)
+
+A Bull cron job runs every **60 seconds**. It calls both venue adapters, walks
+all pagination pages, normalises responses into `NormalizedMarket`, and upserts
+into Postgres. This is the source of truth for market metadata.
+
+**Pagination is required — do not stop at page 1:**
+
+```typescript
+// Polymarket: cursor-based pagination
+async fetchAllPolymarkets(): Promise<NormalizedMarket[]> {
+  const results = [];
+  let nextCursor = null;
+  do {
+    const res = await this.clobClient.get('/markets',
+      { params: nextCursor ? { next_cursor: nextCursor } : {} });
+    results.push(...res.data.data);
+    nextCursor = res.data.next_cursor; // null when exhausted
+  } while (nextCursor);
+  return results.map(m => this.normalise(m));
+}
+
+// Bayes: page + size pagination
+async fetchAllBayesEvents(): Promise<NormalizedMarket[]> {
+  const results = [];
+  let page = 1;
+  let hasMore = true;
+  while (hasMore) {
+    const res = await this.bayesClient.get('/v1/pm/events',
+      { params: { page, size: 50 } });
+    results.push(...res.data.data);
+    hasMore = res.data.data.length === 50;
+    page++;
+  }
+  return results.map(e => this.normalise(e));
+}
+```
+
+**Upsert strategy — never delete and re-insert:**
+
+```typescript
+await this.marketRepo
+  .createQueryBuilder()
+  .insert()
+  .into(Market)
+  .values(market)
+  .orUpdate(
+    ['title', 'status', 'resolution_date', 'volume24h', 'liquidity', 'updated_at'],
+    ['venue_id', 'venue_market_id'],
+  )
+  // NEVER include match_group_id in the update columns — matching handles that
+  .execute();
+```
+
+---
+
+### Layer 2 — Market matching
+
+After each fetch cycle, a matching job runs against all markets with
+`matchGroupId = null`. It compares unmatched markets across venues using
+three signals combined into a confidence score.
+
+**Algorithm:**
+
+```typescript
+function scoreMarketPair(a: NormalizedMarket, b: NormalizedMarket): number {
+  const titleScore    = diceCoefficient(normaliseTitle(a.title), normaliseTitle(b.title));
+  const categoryScore = a.category === b.category ? 1 : 0;
+  const dateScore     = dateProximity(a.resolutionDate, b.resolutionDate);
+  // Weighted: title carries most signal
+  return (titleScore * 0.6) + (categoryScore * 0.2) + (dateScore * 0.2);
+}
+
+const MATCH_THRESHOLD      = 0.75; // auto-match above this
+const REVIEW_THRESHOLD     = 0.50; // flag for manual review above this
+```
+
+**Title normalisation before comparing:**
+
+```typescript
+function normaliseTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\b(will|the|a|an|by|in|on|for|to|of)\b/g, '')
+    .replace(/\s+/g, ' ').trim();
+}
+```
+
+Use **Sørensen–Dice coefficient on bigrams** for title similarity — better
+than Levenshtein for market titles. Install `natural` or implement directly.
+
+**Match outcomes:**
+- Score ≥ 0.75 → auto-match, create `MarketGroup`, set `matchGroupId` on both markets
+- Score 0.50–0.74 → insert into `MatchReviewQueue` for manual approval
+- Score < 0.50 → no match, each market stays as its own single-venue group
+
+**Important:** false positives (wrong matches) are worse than false negatives.
+A wrong match shows users incorrect blended prices. Start conservative.
+
+---
+
+### Layer 3 — Real-time price sync
+
+Two persistent WebSocket connections, one per venue. On every price/book event,
+write to Redis with a 2-second TTL. The execution layer reads exclusively from
+Redis — never from Postgres — during order routing.
+
+**Connection management (NestJS lifecycle):**
+
+```typescript
+@Injectable()
+export class PriceSyncService implements OnModuleInit, OnModuleDestroy {
+  async onModuleInit() {
+    await this.connectPolymarket();
+    await this.connectBayes();
+  }
+  onModuleDestroy() {
+    this.polyWs?.close();
+    this.bayesWs?.close();
+  }
+  private reconnect(venue: string, delayMs: number) {
+    setTimeout(() => venue === 'polymarket'
+      ? this.connectPolymarket()
+      : this.connectBayes(),
+      Math.min(delayMs * 2, 30_000) // exponential backoff, max 30s
+    );
+  }
+}
+```
+
+**Bayes WebSocket — critical gotcha:**
+Bayes may send multiple JSON messages in a single WebSocket frame separated
+by `\n`. Always split on newline before parsing:
+
+```typescript
+this.bayesWs.on('message', (rawData: Buffer) => {
+  const frames = rawData.toString().split('\n').filter(Boolean);
+  for (const frame of frames) {
+    try { this.handleBayesEvent(JSON.parse(frame)); }
+    catch (e) { this.logger.warn('Bad Bayes frame', frame); }
+  }
+});
+```
+
+**Redis key schema:**
+
+```
+price:{venueId}:{venueMarketId}:{outcome}   → price string    TTL: 2s
+book:{venueId}:{venueMarketId}              → order book JSON  TTL: 2s
+bestprice:{matchGroupId}:{outcome}          → best cross-venue JSON  TTL: 2s
+```
+
+On every price event: write venue-specific price, then recompute and write
+`bestprice:{matchGroupId}` by comparing all venues in that group.
+
+**Fallback if WebSocket drops:**
+A 500ms Bull job polls both venue REST APIs for order book snapshots and
+writes to Redis. This keeps prices fresh if the WS connection is down.
+Under normal operation this job is a safety net only — the WS drives pricing.
+
+---
+
+### Layer 4 — Serve
+
+Two read paths — never mix them:
+
+| Path | Source | Use case |
+|---|---|---|
+| Metadata | Postgres (60s in-memory cache) | Market list, categories, titles, resolution dates |
+| Live prices | Redis only | Order routing, quote generation, frontend price display |
+
+**Unified market response shape (from `GET /api/markets/:groupId`):**
+
+```typescript
+{
+  id:             string,          // matchGroupId
+  title:          string,          // canonicalTitle from market_group
+  category:       string,
+  resolutionDate: Date | null,
+  status:         'open' | 'closed' | 'resolved',
+  bestYesPrice:   number,          // cheapest ask across venues (from Redis)
+  bestNoPrice:    number,
+  venues: [{
+    venueId:       string,
+    venueMarketId: string,
+    yesPrice:      number,
+    noPrice:       number,
+    volume24h:     number,
+    liquidity:     number,
+  }],
+  totalVolume24h: number,
+}
+```
+
+---
+
+### Aggregation DB schema (TypeORM entities)
+
+```typescript
+// src/aggregation/entities/market-group.entity.ts
+@Entity('market_groups')
+export class MarketGroup {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'canonical_title' })
+  canonicalTitle: string;
+
+  @Column()
+  category: string;
+
+  @Column({ name: 'resolution_date', type: 'timestamptz', nullable: true })
+  resolutionDate: Date | null;
+
+  @Column({ default: 'open' })
+  status: string;
+
+  @Column({ name: 'matched_at', type: 'timestamptz', nullable: true })
+  matchedAt: Date | null;
+
+  @Column({ name: 'match_score', type: 'float', nullable: true })
+  matchScore: number | null;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updatedAt: Date;
+
+  @OneToMany(() => Market, (m) => m.matchGroup)
+  markets: Market[];
+}
+
+// src/aggregation/entities/market.entity.ts
+@Entity('markets')
+@Unique(['venueId', 'venueMarketId'])
+@Index(['matchGroupId'])
+@Index(['status'])
+@Index(['category'])
+export class Market {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'match_group_id', nullable: true })
+  matchGroupId: string | null;
+
+  @ManyToOne(() => MarketGroup, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'match_group_id' })
+  matchGroup: MarketGroup | null;
+
+  @Column({ name: 'venue_id' })
+  venueId: string;
+
+  @Column({ name: 'venue_market_id' })
+  venueMarketId: string;
+
+  @Column()
+  title: string;
+
+  @Column()
+  category: string;
+
+  @Column()
+  engine: string;  // 'clob' | 'amm'
+
+  @Column({ name: 'resolution_date', type: 'timestamptz', nullable: true })
+  resolutionDate: Date | null;
+
+  @Column({ default: 'open' })
+  status: string;
+
+  @Column({ name: 'volume24h', type: 'float', default: 0 })
+  volume24h: number;
+
+  @Column({ type: 'float', default: 0 })
+  liquidity: number;
+
+  @Column({ name: 'raw_data', type: 'jsonb' })
+  rawData: Record<string, unknown>;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updatedAt: Date;
+}
+
+// src/aggregation/entities/match-review-queue.entity.ts
+@Entity('match_review_queue')
+export class MatchReviewQueue {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'market_id_a' })
+  marketIdA: string;
+
+  @Column({ name: 'market_id_b' })
+  marketIdB: string;
+
+  @Column({ name: 'title_a' })
+  titleA: string;
+
+  @Column({ name: 'title_b' })
+  titleB: string;
+
+  @Column({ type: 'float' })
+  score: number;
+
+  @Column({ default: 'pending' })
+  status: string;  // pending | approved | rejected
+
+  @Column({ name: 'reviewed_at', type: 'timestamptz', nullable: true })
+  reviewedAt: Date | null;
+
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt: Date;
+}
+```
+
+Register all three entities in the `AggregationModule` via
+`TypeOrmModule.forFeature([MarketGroup, Market, MatchReviewQueue])`.
+Run migrations with `typeorm migration:generate` after adding entities.
+
+---
+
+### Aggregation module structure
+
+```
+src/aggregation/
+  aggregation.module.ts
+  aggregation.service.ts          # orchestrates all four layers
+  fetch/
+    market-fetch.service.ts       # 60s Bull cron, pagination, upsert
+    market-fetch.job.ts           # Bull job definition
+  matching/
+    market-matching.service.ts    # scoring, match group creation
+    matching.utils.ts             # diceCoefficient, normaliseTitle, dateProximity
+  sync/
+    price-sync.service.ts         # WebSocket connections + Redis writes
+    price-sync-fallback.job.ts    # 500ms REST fallback job
+  serve/
+    aggregation.controller.ts     # GET /markets, GET /markets/:id
+    aggregation.repository.ts     # Postgres queries for metadata
+    price.repository.ts           # Redis reads for live prices
+```
 
 ---
 
@@ -383,63 +724,31 @@ npm install @types/passport-jwt --save-dev
 
 ---
 
-### Postgres tables (Prisma schema additions)
+### Postgres tables (TypeORM entities)
 
-Add these models to `prisma/schema.prisma`. The `User` model is the anchor.
-All other auth tables reference it.
+Add these as TypeORM entities in `src/auth/entities/`. The `User` entity is
+the anchor. All other auth entities reference it via foreign keys.
 
-```prisma
-model User {
-  id              String    @id @default(uuid())
-  email           String    @unique
-  name            String?
-  avatarUrl       String?
-  googleId        String?   @unique   // set if signed up via Google
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+```typescript
+// Define these as TypeORM @Entity classes in src/auth/entities/
+// Use @PrimaryGeneratedColumn('uuid'), @Column, @ManyToOne etc.
+// Column naming: snake_case in DB, camelCase in entity (use @Column({ name: 'google_id' }))
 
-  // Relations
-  passkeys        Passkey[]
-  magicLinks      MagicLink[]
+// User entity fields:
+// id, email (unique), name (nullable), avatarUrl (nullable),
+// googleId (unique, nullable), createdAt, updatedAt
+// solanaAddress (nullable), solanaSecretKeyEnc (nullable),
+// polygonAddress (nullable), polygonPrivKeyEnc (nullable),
+// walletsGeneratedAt (nullable)
+// Relations: @OneToMany to Passkey, @OneToMany to MagicLink
 
-  // ----------------------------------------------------------------
-  // WALLET FIELDS — not implemented yet, do not populate yet.
-  // These columns will be written by the wallet generation service
-  // when it is built. Leave nullable for now.
-  // ----------------------------------------------------------------
-  solanaAddress       String?   // populated by wallet service (future)
-  solanaSecretKeyEnc  String?   // AES-256-GCM encrypted secret key (future)
-  polygonAddress      String?   // populated by wallet service (future)
-  polygonPrivKeyEnc   String?   // AES-256-GCM encrypted private key (future)
-  walletsGeneratedAt  DateTime? // set when wallet generation completes (future)
-}
+// Passkey entity fields:
+// id, userId (FK → User), credentialId (unique), credentialPublicKey (bytea),
+// counter (bigint), deviceType, backedUp (boolean), transports (text[]),
+// createdAt, lastUsedAt (nullable)
 
-model Passkey {
-  id                  String   @id @default(uuid())
-  userId              String
-  user                User     @relation(fields: [userId], references: [id])
-
-  // WebAuthn credential fields — populated by @simplewebauthn/server
-  credentialId        String   @unique   // base64url encoded
-  credentialPublicKey Bytes              // public key bytes
-  counter             BigInt             // replay attack prevention
-  deviceType          String             // 'singleDevice' | 'multiDevice'
-  backedUp            Boolean
-  transports          String[]           // ['internal', 'hybrid', etc.]
-
-  createdAt           DateTime @default(now())
-  lastUsedAt          DateTime?
-}
-
-model MagicLink {
-  id          String    @id @default(uuid())
-  userId      String
-  user        User      @relation(fields: [userId], references: [id])
-  tokenHash   String    @unique   // bcrypt hash of the raw token
-  expiresAt   DateTime             // 15-minute window
-  usedAt      DateTime?            // null = not yet used
-  createdAt   DateTime  @default(now())
-}
+// MagicLink entity fields:
+// id, userId (FK → User), tokenHash (unique), expiresAt, usedAt (nullable), createdAt
 ```
 
 ---
