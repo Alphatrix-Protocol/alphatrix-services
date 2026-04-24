@@ -39,4 +39,45 @@ export class MarketFetchService {
       return [];
     }
   }
+
+  async upsertMarkets(markets: NormalizedMarket[]): Promise<void> {
+    if (markets.length === 0) return;
+
+    const now = new Date();
+    const batches: NormalizedMarket[][] = [];
+    for (let i = 0; i < markets.length; i += MarketFetchService.BATCH_SIZE) {
+      batches.push(markets.slice(i, i + MarketFetchService.BATCH_SIZE));
+    }
+
+    await Promise.all(
+      batches.map((batch) =>
+        this.marketRepo
+          .createQueryBuilder()
+          .insert()
+          .into(Market)
+          .values(
+            batch.map((m) => ({
+              venueId: m.venueId,
+              venueMarketId: m.venueMarketId,
+              title: m.title,
+              category: m.category,
+              engine: m.engine,
+              resolutionDate: m.resolutionDate,
+              status: m.status,
+              volume24h: m.volume24h,
+              liquidity: m.liquidity,
+              rawData: m,
+              updatedAt: now,
+            })) as any,
+          )
+          .orUpdate(
+            ['title', 'status', 'resolution_date', 'volume24h', 'liquidity', 'raw_data', 'updated_at'],
+            ['venue_id', 'venue_market_id'],
+          )
+          .execute(),
+      ),
+    );
+
+    this.logger.log(`Upserted ${markets.length} markets`);
+  }
 }
