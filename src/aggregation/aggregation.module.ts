@@ -3,6 +3,9 @@ import { BullModule } from '@nestjs/bull';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MarketFetchService } from './fetch/market-fetch.service';
 import { MarketFetchJob } from './fetch/market-fetch.job';
+import { MarketMatchingService } from './matching/market-matching.service';
+import { AggregationController } from './serve/aggregation.controller';
+import { AggregationService } from './serve/aggregation.service';
 import { MarketGroup } from './entities/market-group.entity';
 import { Market } from './entities/market.entity';
 import { MatchReviewQueue } from './entities/match-review-queue.entity';
@@ -16,7 +19,8 @@ import { BayseModule } from '../venues/bayse/bayse.module';
     PolymarketModule,
     BayseModule,
   ],
-  providers: [MarketFetchService, MarketFetchJob],
+  controllers: [AggregationController],
+  providers: [MarketFetchService, MarketFetchJob, MarketMatchingService, AggregationService],
   exports: [MarketFetchService],
 })
 export class AggregationModule {}

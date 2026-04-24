@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BullModule } from '@nestjs/bull';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
@@ -24,7 +25,14 @@ import { MatchReviewQueue } from './aggregation/entities/match-review-queue.enti
         type: 'postgres',
         url: config.get<string>('DATABASE_URL'),
         entities: [User, Passkey, MagicLink, MarketGroup, Market, MatchReviewQueue],
-        synchronize: true, // auto-creates tables — disable in production
+        synchronize: true,
+      }),
+    }),
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        redis: config.get<string>('REDIS_URL') ?? 'redis://localhost:6379',
       }),
     }),
     AuthModule,

@@ -16,22 +16,21 @@ import type {
 } from '../interfaces/venue-adapter.interface';
 
 interface PolymarketMarketRaw {
-  condition_id: string;
+  id: string;
+  conditionId: string;
   question: string;
-  category: string;
-  end_date_iso: string | null;
+  category: string | null;
+  endDate: string | null;
+  startDate: string | null;
   active: boolean;
   closed: boolean;
-  volume: number;
-  liquidity: number;
-  created_at: string;
-  tokens: { token_id: string; outcome: string; price: number }[];
+  volume: string | number | null;
+  liquidity: string | number | null;
+  tokens: { token_id: string; outcome: string; price: number }[] | null;
 }
 
-interface PolymarketMarketsResponse {
-  data: PolymarketMarketRaw[];
-  next_cursor: string | null;
-}
+// Gamma API returns the array directly at the top level
+type PolymarketMarketsResponse = PolymarketMarketRaw[];
 
 @Injectable()
 export class PolymarketAdapter implements IVenueAdapter {
@@ -52,22 +51,26 @@ export class PolymarketAdapter implements IVenueAdapter {
       'https://clob.polymarket.com';
   }
 
-  // Walks all cursor pages and returns every market normalised
+  // Fetch only active markets — Polymarket has 10k+ total but ~500 active
   async fetchMarkets(_params?: MarketQueryParams): Promise<NormalizedMarket[]> {
     const results: NormalizedMarket[] = [];
-    let nextCursor: string | null = null;
+    const limit = 100;
+    let offset = 0;
+    let hasMore = true;
 
-    do {
+    while (hasMore) {
       const res = await firstValueFrom(
         this.http.get<PolymarketMarketsResponse>(`${this.gammaUrl}/markets`, {
-          params: nextCursor ? { next_cursor: nextCursor } : {},
+          params: { limit, offset, active: 'true', closed: 'false' },
         }),
       );
-      const { data, next_cursor } = res.data;
-      results.push(...data.map((m) => this.normalise(m)));
-      nextCursor = next_cursor ?? null;
-    } while (nextCursor);
+      const page = Array.isArray(res.data) ? res.data : [];
+      results.push(...page.map((m) => this.normalise(m)));
+      hasMore = page.length === limit;
+      offset += limit;
+    }
 
+    this.logger.log(`Polymarket fetched ${results.length} active markets`);
     return results;
   }
 
@@ -124,9 +127,9 @@ export class PolymarketAdapter implements IVenueAdapter {
     else if (!raw.active) status = 'closed';
 
     return {
-      id: raw.condition_id,
+      id: raw.conditionId ?? raw.id,
       venueId: this.venueId,
-      venueMarketId: raw.condition_id,
+      venueMarketId: raw.conditionId ?? raw.id,
       title: raw.question,
       category: raw.category ?? 'general',
       outcomes: (raw.tokens ?? []).map((t) => ({
@@ -135,12 +138,12 @@ export class PolymarketAdapter implements IVenueAdapter {
         price: t.price,
         shares: 0,
       })),
-      resolutionDate: raw.end_date_iso ? new Date(raw.end_date_iso) : null,
+      resolutionDate: raw.endDate ? new Date(raw.endDate) : null,
       status,
       engine: 'clob',
-      volume24h: raw.volume ?? 0,
-      liquidity: raw.liquidity ?? 0,
-      createdAt: raw.created_at ? new Date(raw.created_at) : new Date(),
+      volume24h: Number(raw.volume ?? 0),
+      liquidity: Number(raw.liquidity ?? 0),
+      createdAt: raw.startDate ? new Date(raw.startDate) : new Date(),
     };
   }
 }

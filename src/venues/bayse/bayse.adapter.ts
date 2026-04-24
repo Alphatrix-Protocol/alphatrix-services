@@ -15,27 +15,45 @@ import type {
   Unsubscribe,
 } from '../interfaces/venue-adapter.interface';
 
+interface BayseOutcomeRaw {
+  id: string;
+  label: string;        // 'YES' | 'NO'
+  price: number;        // 0–1
+  buyPrice: number;
+}
+
 interface BayseMarketRaw {
   id: string;
-  outcome: string;
-  price: number;
+  title: string;
+  status: string;
+  outcomes: BayseOutcomeRaw[];
 }
 
 interface BayseEventRaw {
   id: string;
-  title: string;
-  category: string;
-  engine: 'clob' | 'amm';
-  status: 'open' | 'closed' | 'resolved';
+  slug: string | null;
+  title: string | null;
+  description: string | null;
+  category: string | null;
+  type: string | null;
+  engine: string | null;           // 'AMM' | 'CLOB' (uppercase from API)
+  status: string | null;           // open|closed|resolved|cancelled|paused|draft
+  openingDate: string | null;
+  closingDate: string | null;
   resolutionDate: string | null;
-  volume24h: number;
-  liquidity: number;
-  createdAt: string;
-  markets: BayseMarketRaw[];
+  liquidity: number | null;
+  totalVolume: number | null;
+  markets: BayseMarketRaw[] | null;
 }
 
 interface BayseEventsResponse {
-  data: BayseEventRaw[];
+  events: BayseEventRaw[];
+  pagination: {
+    page: number;
+    size: number;
+    lastPage: number;
+    totalCount: number;
+  };
 }
 
 const PAGE_SIZE = 50;
@@ -54,24 +72,33 @@ export class BayseAdapter implements IVenueAdapter {
       config.get<string>('BAYSE_BASE_URL') ?? 'https://relay.bayse.markets';
   }
 
-  // Walks all pages (page + size) and returns every event normalised
   async fetchMarkets(_params?: MarketQueryParams): Promise<NormalizedMarket[]> {
     const results: NormalizedMarket[] = [];
     let page = 1;
-    let hasMore = true;
+    let lastPage = 1;
 
-    while (hasMore) {
+    do {
       const res = await firstValueFrom(
         this.http.get<BayseEventsResponse>(`${this.baseUrl}/v1/pm/events`, {
           params: { page, size: PAGE_SIZE },
         }),
       );
-      const events = res.data.data;
-      results.push(...events.map((e) => this.normalise(e)));
-      hasMore = events.length === PAGE_SIZE;
-      page++;
-    }
 
+      const data = res.data;
+      const events: BayseEventRaw[] = Array.isArray(data?.events) ? data.events : [];
+      lastPage = data?.pagination?.lastPage ?? 1;
+
+      if (page === 1) {
+        this.logger.debug(
+          `Bayse page 1: ${events.length} events, lastPage=${lastPage}, totalCount=${data?.pagination?.totalCount ?? '?'}`,
+        );
+      }
+
+      results.push(...events.map((e) => this.normalise(e)));
+      page++;
+    } while (page <= lastPage);
+
+    this.logger.log(`Bayse fetched ${results.length} events`);
     return results;
   }
 
@@ -88,7 +115,7 @@ export class BayseAdapter implements IVenueAdapter {
     const res = await firstValueFrom(
       this.http.get<{ bids: { price: number; size: number }[]; asks: { price: number; size: number }[] }>(
         `${this.baseUrl}/v1/pm/books`,
-        { params: { marketId: venueMarketId } },
+        { params: { outcomeId: venueMarketId } },
       ),
     );
     return {
@@ -123,24 +150,45 @@ export class BayseAdapter implements IVenueAdapter {
   // ─── Normalisation ───────────────────────────────────────────────────────
 
   private normalise(raw: BayseEventRaw): NormalizedMarket {
+    const resolutionDate = raw.closingDate ?? raw.resolutionDate ?? null;
+
+    // Flatten outcomes across all inner markets (most events have one market with YES/NO)
+    const outcomes = (raw.markets ?? []).flatMap((market) =>
+      (market.outcomes ?? []).map((o) => ({
+        id: o.id,
+        label: o.label,
+        price: o.price ?? 0,
+        shares: 0,
+      })),
+    );
+
     return {
       id: raw.id,
       venueId: this.venueId,
       venueMarketId: raw.id,
-      title: raw.title,
+      title: raw.title ?? raw.slug ?? raw.id,
       category: raw.category ?? 'general',
-      outcomes: (raw.markets ?? []).map((m) => ({
-        id: m.id,
-        label: m.outcome,
-        price: m.price,
-        shares: 0,
-      })),
-      resolutionDate: raw.resolutionDate ? new Date(raw.resolutionDate) : null,
-      status: raw.status ?? 'open',
-      engine: raw.engine ?? 'clob',
-      volume24h: raw.volume24h ?? 0,
+      outcomes,
+      resolutionDate: resolutionDate ? new Date(resolutionDate) : null,
+      status: this.normaliseStatus(raw.status),
+      engine: raw.engine?.toLowerCase() === 'amm' ? 'amm' : 'clob',
+      volume24h: raw.totalVolume ?? 0,
       liquidity: raw.liquidity ?? 0,
-      createdAt: raw.createdAt ? new Date(raw.createdAt) : new Date(),
+      createdAt: raw.openingDate ? new Date(raw.openingDate) : new Date(),
     };
+  }
+
+  private normaliseStatus(status: string | null): 'open' | 'closed' | 'resolved' {
+    switch (status?.toLowerCase()) {
+      case 'resolved':
+        return 'resolved';
+      case 'closed':
+      case 'cancelled':
+      case 'paused':
+      case 'draft':
+        return 'closed';
+      default:
+        return 'open';
+    }
   }
 }

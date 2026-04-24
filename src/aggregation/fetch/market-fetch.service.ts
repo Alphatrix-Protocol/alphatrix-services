@@ -23,18 +23,19 @@ export class MarketFetchService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    const interval = this.configService.get<number>('MARKET_FETCH_INTERVAL_MS', 60000);
     await this.marketFetchQueue.add(
       'sync-markets',
       {},
       {
-        repeat: {
-          every: this.configService.get<number>('MARKET_FETCH_INTERVAL_MS', 60000),
-        },
+        repeat: { every: interval },
         removeOnComplete: true,
         removeOnFail: false,
       },
     );
-    this.logger.log('sync-markets repeatable job registered');
+    // Trigger an immediate first run without waiting for the interval
+    await this.marketFetchQueue.add('sync-markets', {}, { priority: 1, removeOnComplete: true });
+    this.logger.log(`sync-markets registered (every ${interval}ms) + immediate sync queued`);
   }
 
   async fetchAllPolymarkets(): Promise<NormalizedMarket[]> {
@@ -68,9 +69,10 @@ export class MarketFetchService implements OnModuleInit {
       batches.push(markets.slice(i, i + MarketFetchService.BATCH_SIZE));
     }
 
-    await Promise.all(
-      batches.map((batch) =>
-        this.marketRepo
+    try {
+      // Run batches sequentially to avoid overwhelming the DB connection pool
+      for (const batch of batches) {
+        await this.marketRepo
           .createQueryBuilder()
           .insert()
           .into(Market)
@@ -81,22 +83,24 @@ export class MarketFetchService implements OnModuleInit {
               title: m.title,
               category: m.category,
               engine: m.engine,
-              resolutionDate: m.resolutionDate,
+              resolutionDate: m.resolutionDate ?? null,
               status: m.status,
-              volume24h: m.volume24h,
-              liquidity: m.liquidity,
+              volume24h: m.volume24h ?? 0,
+              liquidity: m.liquidity ?? 0,
               rawData: m,
               updatedAt: now,
-            })) as any,
+            })) as any[],
           )
           .orUpdate(
             ['title', 'status', 'resolution_date', 'volume24h', 'liquidity', 'raw_data', 'updated_at'],
             ['venue_id', 'venue_market_id'],
           )
-          .execute(),
-      ),
-    );
-
-    this.logger.log(`Upserted ${markets.length} markets`);
+          .execute();
+      }
+      this.logger.log(`Upserted ${markets.length} markets across ${batches.length} batches`);
+    } catch (err) {
+      this.logger.error('upsertMarkets failed', err instanceof Error ? err.message : err);
+      throw err;
+    }
   }
 }
