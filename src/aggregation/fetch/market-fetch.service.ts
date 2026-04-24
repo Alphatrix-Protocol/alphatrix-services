@@ -1,5 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { PolymarketAdapter } from '../../venues/polymarket/polymarket.adapter';
 import { BayseAdapter } from '../../venues/bayse/bayse.adapter';
@@ -7,16 +10,32 @@ import type { NormalizedMarket } from '../../venues/interfaces/venue-adapter.int
 import { Market } from '../entities/market.entity';
 
 @Injectable()
-export class MarketFetchService {
+export class MarketFetchService implements OnModuleInit {
   private readonly logger = new Logger(MarketFetchService.name);
-
   private static readonly BATCH_SIZE = 50;
 
   constructor(
     private readonly polymarketAdapter: PolymarketAdapter,
     private readonly bayseAdapter: BayseAdapter,
+    private readonly configService: ConfigService,
     @InjectRepository(Market) private readonly marketRepo: Repository<Market>,
+    @InjectQueue('market-fetch') private readonly marketFetchQueue: Queue,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.marketFetchQueue.add(
+      'sync-markets',
+      {},
+      {
+        repeat: {
+          every: this.configService.get<number>('MARKET_FETCH_INTERVAL_MS', 60000),
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
+    );
+    this.logger.log('sync-markets repeatable job registered');
+  }
 
   async fetchAllPolymarkets(): Promise<NormalizedMarket[]> {
     try {
