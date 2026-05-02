@@ -1,8 +1,15 @@
 export interface NormalizedOutcome {
   id: string;
   label: string;
-  price: number;
+  price: number;          // 0–1 probability
   shares: number;
+  ticker?: string;        // venue-specific short symbol (e.g. Kalshi ticker)
+  marketUrl?: string;     // direct link to this outcome on the venue
+  volume?: number;        // total lifetime volume for this outcome
+  volume24h?: number;
+  openInterest?: number;
+  yesMint?: string;       // Solana YES token mint (or Polymarket token_id)
+  noMint?: string;        // Solana NO token mint
 }
 
 export interface NormalizedMarket {
@@ -10,13 +17,21 @@ export interface NormalizedMarket {
   venueId: string;
   venueMarketId: string;
   title: string;
+  description?: string;
+  image?: string;
+  icon?: string;
+  ticker?: string;
+  marketUrl?: string;
   category: string;
   outcomes: NormalizedOutcome[];
   resolutionDate: Date | null;
+  openDate?: Date | null;
   status: 'open' | 'closed' | 'resolved';
   engine: 'clob' | 'amm';
   volume24h: number;
   liquidity: number;
+  openInterest?: number;
+  velocity1h?: number;
   createdAt: Date;
 }
 
@@ -74,6 +89,11 @@ export interface PlaceOrderParams {
   price?: number;
 }
 
+export interface PriceHistoryPoint {
+  time: Date;
+  price: number; // 0–1 probability
+}
+
 export type PriceCallback = (price: number, outcome: string) => void;
 export type Unsubscribe = () => void;
 
@@ -85,6 +105,7 @@ export interface IVenueAdapter {
   fetchMarkets(params?: MarketQueryParams): Promise<NormalizedMarket[]>;
   fetchMarket(venueMarketId: string): Promise<NormalizedMarket>;
   fetchOrderBook(venueMarketId: string): Promise<NormalizedOrderBook>;
+  fetchPriceHistory(venueMarketId: string, range: string, opts?: { tokenId?: string }): Promise<PriceHistoryPoint[]>;
 
   getQuote(params: QuoteParams): Promise<NormalizedQuote>;
   subscribeToPrice(venueMarketId: string, cb: PriceCallback): Unsubscribe;

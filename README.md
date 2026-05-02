@@ -25,6 +25,26 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## Auth (Privy-based)
+
+This backend does not run its own login strategies anymore. Authentication is handled by Privy on the frontend, and the backend now acts as a token-verifying resource server.
+
+- Frontend sends the Privy access token via `Authorization: Bearer <token>` (or `privy-token` cookie)
+- Backend guard verifies token signature and claims (`iss`, `aud`, `exp`) using Privy verification key
+- Verified Privy DID is mapped to an internal user row (`users.privyUserId`)
+- If first-time user, backend auto-creates the row and generates wallets
+- Protected routes keep working through the existing global auth guard
+
+### Required environment variables
+
+- `PRIVY_APP_ID` - Privy app ID
+- `PRIVY_VERIFICATION_KEY` - Privy public verification key (PEM, `\n` escaped is supported)
+- `PRIVY_JWT_ISSUER` - expected issuer (defaults to `privy.io`)
+
+### Current auth endpoint
+
+- `GET /auth/me` - returns the currently authenticated internal user record
+
 ## Project setup
 
 ```bash

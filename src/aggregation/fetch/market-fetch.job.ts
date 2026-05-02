@@ -18,21 +18,27 @@ export class MarketFetchJob {
     const start = Date.now();
     this.logger.log(`sync-markets started at ${new Date(start).toISOString()}`);
 
+    let total = 0;
+
     try {
-      const [polymarkets, bayseMarkets] = await Promise.all([
-        this.marketFetchService.fetchAllPolymarkets(),
-        this.marketFetchService.fetchAllBayesEvents(),
-      ]);
+      // Sequential: upsert each venue before fetching the next so an OOM on one
+      // venue doesn't lose the other venue's already-fetched data.
+      const polymarkets = await this.marketFetchService.fetchAllPolymarkets();
+      await this.marketFetchService.upsertMarkets(polymarkets);
+      total += polymarkets.length;
+      this.logger.log(`Polymarket upserted: ${polymarkets.length}`);
 
-      const combined = [...polymarkets, ...bayseMarkets];
-      await this.marketFetchService.upsertMarkets(combined);
+      const bayseMarkets = await this.marketFetchService.fetchAllBayesEvents();
+      await this.marketFetchService.upsertMarkets(bayseMarkets);
+      total += bayseMarkets.length;
+      this.logger.log(`Bayse upserted: ${bayseMarkets.length}`);
 
-      const fetchDuration = Date.now() - start;
+      await this.marketFetchService.expireStaleMarkets();
+
       this.logger.log(
-        `sync-markets fetch+upsert done in ${fetchDuration}ms — ${combined.length} markets`,
+        `sync-markets fetch+upsert done in ${Date.now() - start}ms — ${total} markets total`,
       );
 
-      // Run matching on newly-upserted markets
       await this.marketMatchingService.runMatching();
 
       this.logger.log(`sync-markets fully complete in ${Date.now() - start}ms`);

@@ -16,6 +16,7 @@ import { MarketGroup } from './market-group.entity';
 @Index(['matchGroupId'])
 @Index(['status'])
 @Index(['category'])
+@Index(['venueId', 'status'])
 export class Market {
   @PrimaryGeneratedColumn('uuid')
   id: string;

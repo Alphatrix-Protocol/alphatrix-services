@@ -100,21 +100,36 @@ interface NormalizedMarket {
   venueId: string;               // 'polymarket' | 'bayse'
   venueMarketId: string;         // venue's own ID
   title: string;
+  description?: string;
+  image?: string;                // cover image URL (Polymarket)
+  icon?: string;                 // small icon URL (Polymarket)
+  ticker?: string;               // venue-specific short symbol
+  marketUrl?: string;            // direct link to market on the venue
   category: string;
-  outcomes: NormalizedOutcome[];  // YES / NO (or multiple for categorical)
+  outcomes: NormalizedOutcome[];  // 2 for binary YES/NO; N for categorical (Kalshi)
   resolutionDate: Date | null;
+  openDate?: Date | null;
   status: 'open' | 'closed' | 'resolved';
   engine: 'clob' | 'amm';        // important for routing logic
   volume24h: number;
   liquidity: number;
+  openInterest?: number;
+  velocity1h?: number;
   createdAt: Date;
 }
 
 interface NormalizedOutcome {
   id: string;
-  label: string;                 // 'YES' | 'NO'
+  label: string;                 // 'YES' | 'NO' for binary; arbitrary label for categorical
   price: number;                 // 0–1 probability
   shares: number;
+  ticker?: string;               // per-outcome ticker (Kalshi)
+  marketUrl?: string;            // direct link to this outcome on the venue
+  volume?: number;               // lifetime volume for this outcome
+  volume24h?: number;
+  openInterest?: number;
+  yesMint?: string;              // Solana YES token mint (or Polymarket token_id)
+  noMint?: string;               // Solana NO token mint
 }
 
 interface NormalizedOrderBook {
@@ -415,26 +430,52 @@ Two read paths — never mix them:
 | Metadata | Postgres (60s in-memory cache) | Market list, categories, titles, resolution dates |
 | Live prices | Redis only | Order routing, quote generation, frontend price display |
 
-**Unified market response shape (from `GET /api/markets/:groupId`):**
+**Unified market response shape (from `GET /markets/:id`):**
+
+The `:id` can be a `MarketGroup` UUID, a `Market` UUID, or a `venueMarketId` — the
+endpoint tries all three. Prices come from `rawData.outcomes` (Postgres), not Redis,
+at this layer. All prices are in cents (0–100).
 
 ```typescript
 {
-  id:             string,          // matchGroupId
-  title:          string,          // canonicalTitle from market_group
-  category:       string,
-  resolutionDate: Date | null,
-  status:         'open' | 'closed' | 'resolved',
-  bestYesPrice:   number,          // cheapest ask across venues (from Redis)
-  bestNoPrice:    number,
+  event: {
+    id:          string,
+    title:       string,
+    description: string | null,
+    category:    string,
+    image:       string | null,
+    icon:        string | null,
+    endDate:     string | null,   // ISO 8601
+    status:      'open' | 'closed' | 'resolved',
+  },
+  brief: {
+    volume:            number,   // total volume across all venues
+    liquidity:         number,   // total liquidity across all venues
+    marketProbability: number,   // best YES price in cents (0–100)
+  },
   venues: [{
     venueId:       string,
     venueMarketId: string,
-    yesPrice:      number,
-    noPrice:       number,
+    ticker:        string | null,
+    marketUrl:     string | null,
+    yesPrice:      number,        // cents — shortcut for binary markets
+    noPrice:       number,        // cents — shortcut for binary markets
+    openInterest:  number | null,
     volume24h:     number,
     liquidity:     number,
+    outcomes: [{                  // full per-outcome data; N entries for categorical
+      id:           string,
+      label:        string,
+      price:        number,       // cents (0–100)
+      ticker:       string | null,
+      marketUrl:    string | null,
+      volume:       number | null,
+      volume24h:    number | null,
+      openInterest: number | null,
+      yesMint:      string | null,
+      noMint:       string | null,
+    }],
   }],
-  totalVolume24h: number,
 }
 ```
 

@@ -103,4 +103,17 @@ export class MarketFetchService implements OnModuleInit {
       throw err;
     }
   }
+
+  async expireStaleMarkets(): Promise<void> {
+    const result = await this.marketRepo
+      .createQueryBuilder()
+      .update(Market)
+      .set({ status: 'closed' })
+      .where("status = 'open' AND resolution_date < NOW()")
+      .execute();
+
+    if (result.affected && result.affected > 0) {
+      this.logger.log(`Expired ${result.affected} stale markets past resolution date`);
+    }
+  }
 }
